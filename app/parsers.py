@@ -7,7 +7,34 @@ import io
 from typing import List
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 import openpyxl
+
+
+def _extract_texts_from_shapes(shapes, texts: List[str]) -> None:
+    """Recursively extract text from a collection of shapes, including groups."""
+    for shape in shapes:
+        try:
+            # Recurse into group shapes (which may contain images and other shapes)
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _extract_texts_from_shapes(shape.shapes, texts)
+                continue
+
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    line = " ".join(run.text for run in para.runs).strip()
+                    if line:
+                        texts.append(line)
+
+            # Tables inside slides
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        texts.append(" | ".join(cells))
+        except Exception:
+            # Skip shapes that cannot be read (e.g. unsupported image types)
+            continue
 
 
 def parse_pptx(file_bytes: bytes) -> List[dict]:
@@ -18,21 +45,11 @@ def parse_pptx(file_bytes: bytes) -> List[dict]:
     prs = Presentation(io.BytesIO(file_bytes))
     slides = []
     for idx, slide in enumerate(prs.slides, start=1):
-        texts = []
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    line = " ".join(run.text for run in para.runs).strip()
-                    if line:
-                        texts.append(line)
-            # Tables inside slides
-            if shape.has_table:
-                for row in shape.table.rows:
-                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                    if cells:
-                        texts.append(" | ".join(cells))
-        if texts:
-            slides.append({"source": f"Slide {idx}", "text": "\n".join(texts)})
+        texts: List[str] = []
+        _extract_texts_from_shapes(slide.shapes, texts)
+        # Always include the slide entry; use a placeholder for image-only slides
+        slide_text = "\n".join(texts) if texts else "[Slide contains no extractable text]"
+        slides.append({"source": f"Slide {idx}", "text": slide_text})
     return slides
 
 
